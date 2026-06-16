@@ -1,0 +1,20 @@
+[package]
+name = "hardware-trust-engine-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["StationaryDev37"]
+description = "Zero-Knowledge Hardware Enclave Signature Anonymizer Core Protocol"
+
+[lib]
+name = "hardware_trust_engine_core"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+ark-ff = { version = "0.4.2", default-features = false }
+ark-ec = { version = "0.4.2", default-features = false }
+ark-relations = { version = "0.4.2", default-features = false }
+ark-snark = { version = "0.4.2", default-features = false }
+ark-groth16 = { version = "0.4.2", default-features = false }
+ark-r1cs-std = { version = "0.4.0", default-features = false, features = ["r1cs"] }
+digest = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false }
