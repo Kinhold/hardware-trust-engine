@@ -1,17 +1,9 @@
-
 use crate::HteError;
 
-// Placeholder for ASN.1 parsing library
-// In a real implementation, you would use a crate like `asn1` or `der`
-// to parse the ASN.1 structure.
-
-// OID for Android Key Attestation Extension
-
-
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecurityLevel {
     Software = 0,
-    TEE = 1,
+    Tee = 1,
     StrongBox = 2,
 }
 
@@ -21,113 +13,147 @@ impl TryFrom<u32> for SecurityLevel {
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(SecurityLevel::Software),
-            1 => Ok(SecurityLevel::TEE),
+            1 => Ok(SecurityLevel::Tee),
             2 => Ok(SecurityLevel::StrongBox),
-            _ => Err(crate::HteError::InvalidAttestationData("Unknown security level".to_string())),
+            _ => Err(HteError::InvalidAttestationData(
+                "unknown security level".to_string(),
+            )),
         }
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct AndroidKeyDescription {
     pub attestation_version: u32,
     pub attestation_security_level: SecurityLevel,
     pub keymaster_version: u32,
     pub keymaster_security_level: SecurityLevel,
-    // ... other fields from KeyDescription
 }
 
 impl AndroidKeyDescription {
-    // Placeholder for parsing the KeyDescription from ASN.1
-    pub fn from_asn1_der(_der_bytes: &[u8]) -> Result<Self, HteError> {
-        // In a real implementation, this would parse the DER bytes
-        // For now, we return a dummy structure based on the requirements.
-        // This is where the strict, non-panicking, zero-copy DER parser would go.
-
-        // Simulate parsing and checks
-        let attestation_version = 3; // Must be >= 3
-        let attestation_security_level = SecurityLevel::TEE; // Must be TEE or StrongBox
-        let keymaster_version = 4;
-        let keymaster_security_level = SecurityLevel::StrongBox; // Must be TEE or StrongBox
-
-        if attestation_version < 3 {
-            return Err(crate::HteError::InvalidAttestationData("attestationVersion < 3".to_string()));
+    /// Parsing is deliberately unavailable until strict DER validation exists.
+    pub fn from_asn1_der(der_bytes: &[u8]) -> Result<Self, HteError> {
+        if der_bytes.is_empty() {
+            return Err(HteError::InvalidAttestationData(
+                "Android key description is empty".to_string(),
+            ));
         }
-        if !matches!(attestation_security_level, SecurityLevel::TEE | SecurityLevel::StrongBox) {
-            return Err(crate::HteError::InvalidAttestationData("attestationSecurityLevel not TEE or StrongBox".to_string()));
-        }
-        if !matches!(keymaster_security_level, SecurityLevel::TEE | SecurityLevel::StrongBox) {
-            return Err(crate::HteError::InvalidAttestationData("keymasterSecurityLevel not TEE or StrongBox".to_string()));
-        }
-
-        Ok(AndroidKeyDescription {
-            attestation_version,
-            attestation_security_level,
-            keymaster_version,
-            keymaster_security_level,
-        })
+        Err(HteError::Unsupported(
+            "Android key attestation DER parsing is not implemented".to_string(),
+        ))
     }
 }
 
 pub struct TeeQuoteBackend;
 
 impl TeeQuoteBackend {
+    /// Fails closed until certificate parsing and trust-path validation exist.
     pub fn verify_android_attestation(
         attestation_cert_chain: &[&[u8]],
         google_root_ca_public_key: &[u8],
     ) -> Result<AndroidKeyDescription, HteError> {
-        // Step 1: Parse the leaf certificate\'s extensions for Android Key Attestation OID
-        // This is a placeholder for the actual ASN.1 parsing.
-        let leaf_cert_der = attestation_cert_chain.first().ok_or(crate::HteError::InvalidAttestationData("Empty certificate chain".to_string()))?;
-        let key_description = AndroidKeyDescription::from_asn1_der(leaf_cert_der)?;
-
-        // Step 2: Cryptographic Trust Path Verification
-        // This is a simplified placeholder. A real implementation would involve:
-        // - X.509 certificate parsing (e.g., using `x509-parser` crate)
-        // - Signature verification of each cert against its parent
-        // - Final verification against the hardcoded Google Root CA public key
-        // - Checking certificate validity dates and extensions
-
-        // Simulate successful verification for now
-        if attestation_cert_chain.len() < 2 {
-            return Err(HteError::UntrustedChain("Certificate chain too short".to_string()));
+        if attestation_cert_chain.is_empty() {
+            return Err(HteError::InvalidAttestationData(
+                "empty certificate chain".to_string(),
+            ));
         }
-
-        // Dummy check for Google Root CA public key (in a real scenario, this would be a complex cryptographic check)
         if google_root_ca_public_key.is_empty() {
-             return Err(HteError::UntrustedChain("Google Root CA public key is empty".to_string()));
+            return Err(HteError::UntrustedChain(
+                "trust anchor is empty".to_string(),
+            ));
         }
-
-        Ok(key_description)
+        Err(HteError::Unsupported(
+            "Android certificate-chain and key-attestation verification is not implemented"
+                .to_string(),
+        ))
     }
 
-    // Placeholder for SGX/SEV Quote Validation
+    /// Fails closed until quote parsing and measurement policy exist.
     pub fn verify_sgx_sev_quote(quote_bytes: &[u8]) -> Result<(), HteError> {
-        // Implement SGX/SEV specific verification logic here
-        // This would involve parsing quote structures and enforcing enclave measurements.
         if quote_bytes.is_empty() {
-            return Err(HteError::InvalidAttestationData("SGX/SEV quote is empty".to_string()));
+            return Err(HteError::InvalidAttestationData(
+                "SGX/SEV quote is empty".to_string(),
+            ));
         }
-        Ok(())
+        Err(HteError::Unsupported(
+            "SGX/SEV quote verification is not implemented".to_string(),
+        ))
     }
 }
 
-// TeeQuoteReceiptVerifier would implement ReceiptVerifierPlugin and use TeeQuoteBackend
 pub struct TeeQuoteReceiptVerifier {
     google_root_ca_public_key: Vec<u8>,
 }
 
 impl TeeQuoteReceiptVerifier {
     pub fn new(google_root_ca_public_key: Vec<u8>) -> Self {
-        Self { google_root_ca_public_key }
+        Self {
+            google_root_ca_public_key,
+        }
     }
 }
 
 impl crate::ReceiptVerifierPlugin for TeeQuoteReceiptVerifier {
-    fn verify_receipt(&self, receipt_proof: &[u8], _public_inputs: &[u8]) -> Result<(), crate::HteError> {
-        // Assuming receipt_proof contains the Android attestation certificate chain for this example
-        // In a real scenario, the receipt_proof would be structured to indicate the type of TEE attestation
-        let cert_chain_slice: Vec<&[u8]> = vec![receipt_proof, receipt_proof]; // Dummy chain for compilation
-        TeeQuoteBackend::verify_android_attestation(&cert_chain_slice, &self.google_root_ca_public_key)?;
+    fn verify_receipt(&self, receipt_proof: &[u8], _public_inputs: &[u8]) -> Result<(), HteError> {
+        TeeQuoteBackend::verify_android_attestation(
+            &[receipt_proof],
+            &self.google_root_ca_public_key,
+        )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ReceiptVerifierPlugin;
+
+    #[test]
+    fn parses_security_level_values_strictly() {
+        assert_eq!(SecurityLevel::try_from(0).unwrap(), SecurityLevel::Software);
+        assert_eq!(SecurityLevel::try_from(1).unwrap(), SecurityLevel::Tee);
+        assert_eq!(
+            SecurityLevel::try_from(2).unwrap(),
+            SecurityLevel::StrongBox
+        );
+        assert!(SecurityLevel::try_from(3).is_err());
+    }
+
+    #[test]
+    fn android_parser_rejects_empty_and_fails_closed_for_non_empty_der() {
+        assert!(matches!(
+            AndroidKeyDescription::from_asn1_der(b""),
+            Err(HteError::InvalidAttestationData(_))
+        ));
+        assert!(matches!(
+            AndroidKeyDescription::from_asn1_der(b"not DER"),
+            Err(HteError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn android_verifier_never_accepts_placeholder_chain() {
+        assert!(matches!(
+            TeeQuoteBackend::verify_android_attestation(&[b"leaf", b"root"], b"anchor"),
+            Err(HteError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn sgx_sev_verifier_fails_closed() {
+        assert!(matches!(
+            TeeQuoteBackend::verify_sgx_sev_quote(b"quote"),
+            Err(HteError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn receipt_plugin_fails_closed() {
+        let verifier = TeeQuoteReceiptVerifier::new(b"anchor".to_vec());
+
+        assert!(matches!(
+            verifier.verify_receipt(b"certificate", b""),
+            Err(HteError::Unsupported(_))
+        ));
     }
 }

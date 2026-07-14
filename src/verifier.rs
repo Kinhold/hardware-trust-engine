@@ -1,98 +1,173 @@
-
-use std::ffi::c_void;
-use zeroize::Zeroize;
 use crate::HteError;
+use std::collections::HashMap;
 
-// Placeholder for barretenberg FFI
-extern "C" {
-    fn barretenberg_verify_proof(
-        vk_ptr: *const c_void,
-        proof_ptr: *const c_void,
-        public_inputs_ptr: *const c_void,
-        public_inputs_len: usize,
-    ) -> bool;
-}
-
-pub trait ReceiptVerifierPlugin {
+pub trait ReceiptVerifierPlugin: Send + Sync {
     fn verify_receipt(&self, receipt_proof: &[u8], public_inputs: &[u8]) -> Result<(), HteError>;
 }
 
-pub struct NoirProofBackend<
-    'a
-> {
-    verification_key: &'a [u8],
+/// Registry of explicitly supplied verifier implementations.
+///
+/// The scaffold does not install dummy verifiers: an unknown encoding fails
+/// closed by returning `None`.
+#[derive(Default)]
+pub struct VerifierRegistry {
+    verifiers: HashMap<String, Box<dyn ReceiptVerifierPlugin>>,
 }
 
-impl<'a> NoirProofBackend<'a> {
-    pub fn new(verification_key: &'a [u8]) -> Self {
-        Self { verification_key }
+impl VerifierRegistry {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub fn verify_proof(
-        &self,
-        proof_buffer: &[u8],
-        public_inputs: &[u8],
+    pub fn register(
+        &mut self,
+        proof_encoding: impl Into<String>,
+        verifier: Box<dyn ReceiptVerifierPlugin>,
     ) -> Result<(), HteError> {
-        let vk_ptr = self.verification_key.as_ptr() as *const c_void;
-        let proof_ptr = proof_buffer.as_ptr() as *const c_void;
-        let public_inputs_ptr = public_inputs.as_ptr() as *const c_void;
-        let public_inputs_len = public_inputs.len();
+        let proof_encoding = proof_encoding.into();
+        if proof_encoding.trim().is_empty() {
+            return Err(HteError::InvalidProof(
+                "proof encoding must not be empty".to_string(),
+            ));
+        }
+        if self.verifiers.contains_key(&proof_encoding) {
+            return Err(HteError::InvalidProof(format!(
+                "verifier already registered for {proof_encoding}"
+            )));
+        }
+        self.verifiers.insert(proof_encoding, verifier);
+        Ok(())
+    }
 
-        // Simulate memory scrubbing for intermediate data
-        let mut intermediate_scalars = vec![0u8; 32]; // Example intermediate data
-        // ... perform ZK operations ...
-        intermediate_scalars.zeroize();
+    pub fn get_verifier(&self, proof_encoding: &str) -> Option<&dyn ReceiptVerifierPlugin> {
+        self.verifiers.get(proof_encoding).map(Box::as_ref)
+    }
+}
 
-        let result = unsafe {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerificationOutcome {
+    Success,
+    Failure(String),
+}
+
+/// Native Barretenberg adapter.
+///
+/// This adapter is excluded from default builds because the final binary must
+/// supply a native symbol with this exact ABI. Enabling the feature does not
+/// make the verifier trusted; the embedding application is responsible for
+/// linking and validating its Barretenberg implementation.
+#[cfg(feature = "barretenberg-ffi")]
+pub struct NoirProofBackend {
+    verification_key: Vec<u8>,
+}
+
+#[cfg(feature = "barretenberg-ffi")]
+impl NoirProofBackend {
+    pub fn new(verification_key: Vec<u8>) -> Result<Self, HteError> {
+        if verification_key.is_empty() {
+            return Err(HteError::InvalidProof(
+                "verification key must not be empty".to_string(),
+            ));
+        }
+        Ok(Self { verification_key })
+    }
+
+    pub fn verify_proof(&self, proof_buffer: &[u8], public_inputs: &[u8]) -> Result<(), HteError> {
+        if proof_buffer.is_empty() {
+            return Err(HteError::InvalidProof(
+                "proof must not be empty".to_string(),
+            ));
+        }
+
+        let verified = unsafe {
             barretenberg_verify_proof(
-                vk_ptr,
-                proof_ptr,
-                public_inputs_ptr,
-                public_inputs_len,
+                self.verification_key.as_ptr(),
+                self.verification_key.len(),
+                proof_buffer.as_ptr(),
+                proof_buffer.len(),
+                public_inputs.as_ptr(),
+                public_inputs.len(),
             )
         };
 
-        if result {
+        if verified {
             Ok(())
         } else {
-            Err(HteError::VerificationFailed("Noir proof verification failed".to_string()))
+            Err(HteError::VerificationFailed(
+                "Barretenberg rejected the Noir proof".to_string(),
+            ))
         }
     }
 }
 
-impl<'a> ReceiptVerifierPlugin for NoirProofBackend<'a> {
+#[cfg(feature = "barretenberg-ffi")]
+impl ReceiptVerifierPlugin for NoirProofBackend {
     fn verify_receipt(&self, receipt_proof: &[u8], public_inputs: &[u8]) -> Result<(), HteError> {
         self.verify_proof(receipt_proof, public_inputs)
     }
 }
 
-pub struct VerifierRegistry {
-    // Placeholder for a registry of verifiers
+#[cfg(feature = "barretenberg-ffi")]
+extern "C" {
+    fn barretenberg_verify_proof(
+        verification_key_ptr: *const u8,
+        verification_key_len: usize,
+        proof_ptr: *const u8,
+        proof_len: usize,
+        public_inputs_ptr: *const u8,
+        public_inputs_len: usize,
+    ) -> bool;
 }
 
-impl VerifierRegistry {
-    pub fn new() -> Self {
-        Self {}
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    pub fn get_verifier(&self, proof_encoding: &str) -> Option<Box<dyn ReceiptVerifierPlugin>> {
-        // This would dispatch based on proof_encoding (e.g., "noir", "tee")
-        // For now, returning a dummy NoirProofBackend
-        if proof_encoding == "noir" {
-            // In a real scenario, verification_key would be loaded dynamically
-            let dummy_vk = vec![0u8; 64]; // Dummy verification key
-            Some(Box::new(NoirProofBackend::new(dummy_vk.leak())))
-        } else if proof_encoding == "tee" {
-            let dummy_google_root_ca_public_key = vec![0u8; 64]; // Dummy key
-            Some(Box::new(crate::tee::TeeQuoteReceiptVerifier::new(dummy_google_root_ca_public_key)))
-        } else {
-            None
+    struct RejectingVerifier;
+
+    impl ReceiptVerifierPlugin for RejectingVerifier {
+        fn verify_receipt(
+            &self,
+            _receipt_proof: &[u8],
+            _public_inputs: &[u8],
+        ) -> Result<(), HteError> {
+            Err(HteError::VerificationFailed("rejected in test".to_string()))
         }
     }
-}
 
-// Verification outcomes enum
-pub enum VerificationOutcome {
-    Success,
-    Failure(String),
+    #[test]
+    fn registry_fails_closed_without_registered_verifier() {
+        let registry = VerifierRegistry::new();
+
+        assert!(registry.get_verifier("noir").is_none());
+        assert!(registry.get_verifier("tee").is_none());
+    }
+
+    #[test]
+    fn registry_dispatches_only_explicitly_registered_verifier() {
+        let mut registry = VerifierRegistry::new();
+        registry
+            .register("test", Box::new(RejectingVerifier))
+            .unwrap();
+
+        let error = registry
+            .get_verifier("test")
+            .unwrap()
+            .verify_receipt(b"proof", b"inputs")
+            .unwrap_err();
+
+        assert!(error.to_string().contains("rejected in test"));
+    }
+
+    #[test]
+    fn registry_rejects_empty_and_duplicate_encodings() {
+        let mut registry = VerifierRegistry::new();
+        assert!(registry.register("", Box::new(RejectingVerifier)).is_err());
+        registry
+            .register("test", Box::new(RejectingVerifier))
+            .unwrap();
+        assert!(registry
+            .register("test", Box::new(RejectingVerifier))
+            .is_err());
+    }
 }
